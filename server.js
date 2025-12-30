@@ -12,9 +12,10 @@ const API_BASE_URL = process.env.API_BASE_URL;
 const GITHUB_REPO = process.env.GITHUB_REPO;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
-const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/contents/`;
+// RUTA CORREGIDA 👇👇👇
+const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/contents/Cat-logo.imagenes-/`;
 
-// Guardar archivos en GitHub
+// Guardar archivo en GitHub
 async function saveToGitHub(path, content) {
     const encodedContent = Buffer.from(content).toString("base64");
 
@@ -31,7 +32,7 @@ async function saveToGitHub(path, content) {
     });
 }
 
-// Obtener JSON del usuario en GitHub
+// Obtener JSON del usuario
 async function getUserData(email) {
     const url = GITHUB_API_URL + `data/users/${email}.json`;
 
@@ -51,7 +52,7 @@ async function saveUserData(email, data) {
 
 // ================== ENDPOINTS ==================
 
-// Subir imagen a GitHub
+// Subir imagen
 app.post("/api/upload", async (req, res) => {
     const { base64, description } = req.body;
 
@@ -88,7 +89,7 @@ app.get("/api/images", async (req, res) => {
 
         res.json(results);
     } catch (err) {
-        console.log("ERROR:", err.message);
+        console.log("ERROR AL OBTENER IMÁGENES:", err.message);
         res.json([]);
     }
 });
@@ -109,7 +110,6 @@ app.post("/api/:email/favoritos", async (req, res) => {
 app.get("/api/:email/favoritos", async (req, res) => {
     const email = req.params.email;
     const user = await getUserData(email);
-
     res.json(user.favoritos);
 });
 
@@ -129,7 +129,6 @@ app.post("/api/:email/historial", async (req, res) => {
 app.get("/api/:email/historial", async (req, res) => {
     const email = req.params.email;
     const user = await getUserData(email);
-
     res.json(user.historial);
 });
 
@@ -144,6 +143,7 @@ app.get("/api/:email/estadisticas", async (req, res) => {
     });
 });
 
+// Servidor
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () =>
     console.log(`Servidor listo en puerto ${PORT} | Base: ${API_BASE_URL}`)
