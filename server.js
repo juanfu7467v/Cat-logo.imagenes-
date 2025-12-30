@@ -1,107 +1,133 @@
 import express from "express";
 import cors from "cors";
-import fs from "fs";
+import fetch from "node-fetch";
 import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
-app.use(express.static("public"));
 
-const USERS_FILE = "./data/users.json";
+// Variables de entorno
+const API_BASE_URL = process.env.API_BASE_URL;
+const GITHUB_REPO = process.env.GITHUB_REPO;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
-// ===== UTILIDADES =====
-function loadUsers() {
-    if (!fs.existsSync(USERS_FILE)) return {};
-    return JSON.parse(fs.readFileSync(USERS_FILE));
+const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/contents/`;
+
+// Guardar archivo en GitHub
+async function saveToGitHub(path, content) {
+    const encodedContent = Buffer.from(content).toString("base64");
+
+    await fetch(GITHUB_API_URL + path, {
+        method: "PUT",
+        headers: {
+            "Authorization": `Bearer ${GITHUB_TOKEN}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            message: "Update file",
+            content: encodedContent
+        })
+    });
 }
 
-function saveUsers(data) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2));
+// Obtener historial del usuario
+async function getUserData(email) {
+    const url = GITHUB_API_URL + `data/users/${email}.json`;
+    const res = await fetch(url, {
+        headers: { "Authorization": `Bearer ${GITHUB_TOKEN}` }
+    });
+
+    if (!res.ok) return { favoritos: [], historial: [] };
+
+    const data = await res.json();
+    return JSON.parse(Buffer.from(data.content, "base64").toString());
 }
 
-// ===== ENDPOINTS =====
+// Guardar historial del usuario
+async function saveUserData(email, data) {
+    await saveToGitHub(`data/users/${email}.json`, JSON.stringify(data));
+}
 
-// Subir imagen en Base64
-app.post("/api/upload", (req, res) => {
+// ==================== ENDPOINTS =====================
+
+// Subir imagen base64 a GitHub
+app.post("/api/upload", async (req, res) => {
     const { base64, description } = req.body;
 
-    if (!base64 || !description) {
+    if (!base64 || !description)
         return res.status(400).json({ message: "Faltan datos" });
-    }
 
     const id = uuidv4();
-    const filePath = `public/images/${id}.txt`;
+    const imageData = { id, base64, description };
 
-    fs.writeFileSync(filePath, JSON.stringify({ id, base64, description }));
+    await saveToGitHub(`public/images/${id}.json`, JSON.stringify(imageData));
 
     res.json({ message: "Imagen guardada", id });
 });
 
-// Obtener TODAS las imágenes
-app.get("/api/images", (req, res) => {
-    const files = fs.readdirSync("public/images");
-    const images = files.map(file => {
-        const data = JSON.parse(fs.readFileSync(`public/images/${file}`));
-        return data;
+// Obtener TODAS las imágenes desde GitHub
+app.get("/api/images", async (req, res) => {
+    const listReq = await fetch(GITHUB_API_URL + "public/images", {
+        headers: { "Authorization": `Bearer ${GITHUB_TOKEN}` }
     });
-    res.json(images);
-});
 
-// Agregar a favoritos por usuario
-app.post("/api/:email/favoritos", (req, res) => {
-    const email = req.params.email;
-    const { id } = req.body;
+    const list = await listReq.json();
+    if (!Array.isArray(list)) return res.json([]);
 
-    const users = loadUsers();
-    if (!users[email]) users[email] = { favoritos: [], historial: [], estadisticas: {} };
-
-    if (!users[email].favoritos.includes(id)) {
-        users[email].favoritos.push(id);
-        saveUsers(users);
+    const results = [];
+    for (let item of list) {
+        const imgReq = await fetch(item.download_url);
+        results.push(await imgReq.json());
     }
 
-    res.json({ message: "Agregado a favoritos", favoritos: users[email].favoritos });
+    res.json(results);
 });
 
-// Obtener favoritos
-app.get("/api/:email/favoritos", (req, res) => {
-    const email = req.params.email;
-    const users = loadUsers();
-
-    if (!users[email]) return res.json([]);
-
-    res.json(users[email].favoritos);
-});
-
-// Guardar historial
-app.post("/api/:email/historial", (req, res) => {
+// Favoritos por usuario
+app.post("/api/:email/favoritos", async (req, res) => {
     const email = req.params.email;
     const { id } = req.body;
 
-    const users = loadUsers();
-    if (!users[email]) users[email] = { favoritos: [], historial: [], estadisticas: {} };
+    const user = await getUserData(email);
+    if (!user.favoritos.includes(id)) user.favoritos.push(id);
 
-    users[email].historial.push(id);
-    saveUsers(users);
+    await saveUserData(email, user);
+
+    res.json({ message: "Agregado a favoritos", favoritos: user.favoritos });
+});
+
+app.get("/api/:email/favoritos", async (req, res) => {
+    const email = req.params.email;
+    const user = await getUserData(email);
+
+    res.json(user.favoritos);
+});
+
+// Historial
+app.post("/api/:email/historial", async (req, res) => {
+    const email = req.params.email;
+    const { id } = req.body;
+
+    const user = await getUserData(email);
+    user.historial.push(id);
+
+    await saveUserData(email, user);
 
     res.json({ message: "Historial actualizado" });
 });
 
-// Obtener historial
-app.get("/api/:email/historial", (req, res) => {
+app.get("/api/:email/historial", async (req, res) => {
     const email = req.params.email;
-    const users = loadUsers();
+    const user = await getUserData(email);
 
-    res.json(users[email]?.historial || []);
+    res.json(user.historial);
 });
 
-// Estadísticas por usuario
-app.get("/api/:email/estadisticas", (req, res) => {
+// Estadísticas usuario
+app.get("/api/:email/estadisticas", async (req, res) => {
     const email = req.params.email;
-    const users = loadUsers();
-
-    const user = users[email] || { favoritos: [], historial: [] };
+    const user = await getUserData(email);
 
     res.json({
         totalFavoritos: user.favoritos.length,
@@ -109,6 +135,8 @@ app.get("/api/:email/estadisticas", (req, res) => {
     });
 });
 
-// Inicializar servidor
+// Servidor
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
+app.listen(PORT, () =>
+    console.log(`Servidor listo en puerto ${PORT} | Base: ${API_BASE_URL}`)
+);
