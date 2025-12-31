@@ -5,7 +5,6 @@ import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 app.use(cors());
-// Aumentamos el límite para soportar múltiples base64 en un solo JSON
 app.use(express.json({ limit: "100mb" }));
 
 // Variables de entorno
@@ -17,16 +16,28 @@ const GITHUB_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/contents/`;
 // --- FUNCIONES AUXILIARES DE GITHUB ---
 
 async function getFileFromGitHub(path) {
-    const res = await fetch(GITHUB_API_URL + path, {
-        headers: { "Authorization": `Bearer ${GITHUB_TOKEN}` }
+    // Añadimos un parámetro 't' aleatorio para evitar el caché de GitHub
+    const cacheBuster = `?t=${Date.now()}`;
+    const res = await fetch(GITHUB_API_URL + path + cacheBuster, {
+        headers: { 
+            "Authorization": `Bearer ${GITHUB_TOKEN}`,
+            "Accept": "application/vnd.github.v3+json"
+        }
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+        console.log(`Archivo no encontrado o error en: ${path}`);
+        return null;
+    }
 
     const data = await res.json();
+    
+    // Decodificar contenido Base64 de GitHub a String y luego a JSON
+    const contentString = Buffer.from(data.content, "base64").toString("utf-8");
+    
     return {
         sha: data.sha,
-        content: JSON.parse(Buffer.from(data.content, "base64").toString())
+        content: JSON.parse(contentString)
     };
 }
 
@@ -34,11 +45,11 @@ async function saveToGitHub(path, content, sha = null) {
     const encodedContent = Buffer.from(JSON.stringify(content, null, 2)).toString("base64");
 
     const body = {
-        message: "Update images database",
+        message: `Update database: ${new Date().toISOString()}`,
         content: encodedContent
     };
 
-    if (sha) body.sha = sha; // Necesario para actualizar archivos existentes
+    if (sha) body.sha = sha;
 
     const res = await fetch(GITHUB_API_URL + path, {
         method: "PUT",
@@ -49,16 +60,20 @@ async function saveToGitHub(path, content, sha = null) {
         body: JSON.stringify(body)
     });
 
+    if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Error al guardar en GitHub:", errorText);
+    }
+
     return res.ok;
 }
 
-// Obtener datos del usuario
+// Auxiliares para usuario
 async function getUserData(email) {
     const data = await getFileFromGitHub(`data/users/${email}.json`);
     return data ? data.content : { favoritos: [], historial: [] };
 }
 
-// Guardar datos usuario
 async function saveUserData(email, data) {
     const existingFile = await getFileFromGitHub(`data/users/${email}.json`);
     await saveToGitHub(`data/users/${email}.json`, data, existingFile?.sha);
@@ -66,7 +81,7 @@ async function saveUserData(email, data) {
 
 // ======================== ENDPOINTS ========================
 
-// 1. Subir imagen (Agrega a un solo archivo JSON)
+// 1. Subir imagen (Escribe en el archivo único)
 app.post("/api/upload", async (req, res) => {
     const { base64, description } = req.body;
 
@@ -74,53 +89,57 @@ app.post("/api/upload", async (req, res) => {
         return res.status(400).json({ message: "Faltan datos" });
 
     try {
-        // 1. Intentar obtener el archivo actual de imágenes
         const existingData = await getFileFromGitHub(IMAGES_FILE_PATH);
         
-        const imagesList = existingData ? existingData.content : [];
-        const sha = existingData ? existingData.sha : null;
+        let imagesList = [];
+        let sha = null;
 
-        // 2. Crear nueva entrada
+        if (existingData) {
+            imagesList = Array.isArray(existingData.content) ? existingData.content : [];
+            sha = existingData.sha;
+        }
+
         const newImage = {
             id: uuidv4(),
             description,
-            base64, // Guardamos el base64 directamente
+            base64, 
             timestamp: new Date().toISOString()
         };
 
-        // 3. Añadir al array
         imagesList.push(newImage);
 
-        // 4. Guardar de nuevo en GitHub
         const success = await saveToGitHub(IMAGES_FILE_PATH, imagesList, sha);
 
         if (success) {
-            res.json({ message: "Imagen guardada en archivo central", id: newImage.id });
+            res.json({ message: "Imagen guardada correctamente", id: newImage.id });
         } else {
-            res.status(500).json({ message: "Error al guardar en GitHub" });
+            res.status(500).json({ message: "No se pudo actualizar el archivo en GitHub" });
         }
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Error interno" });
+        console.error("Error en upload:", error);
+        res.status(500).json({ message: "Error interno del servidor" });
     }
 });
 
-// 2. Obtener todas las imágenes (Carga rápida desde un solo archivo)
+// 2. Obtener todas las imágenes (Lee el archivo único)
 app.get("/api/images", async (req, res) => {
     try {
         const data = await getFileFromGitHub(IMAGES_FILE_PATH);
-        if (!data) return res.json([]);
         
-        // Mapeamos para asegurar que el formato sea el esperado por el frontend
+        if (!data || !data.content) {
+            console.log("El archivo no existe o está vacío.");
+            return res.json([]);
+        }
+        
         const images = data.content.map(img => ({
             id: img.id,
             description: img.description,
-            imageUrl: img.base64.includes("base64,") ? img.base64 : `data:image/jpeg;base64,${img.base64}`
+            imageUrl: img.base64.startsWith("data:") ? img.base64 : `data:image/jpeg;base64,${img.base64}`
         }));
 
-        res.json(images);
+        res.json(images.reverse()); // Reverse para mostrar las más nuevas primero
     } catch (err) {
-        console.log("ERROR:", err.message);
+        console.error("Error en get images:", err.message);
         res.json([]);
     }
 });
@@ -163,9 +182,7 @@ app.get("/api/:email/estadisticas", async (req, res) => {
     });
 });
 
-// ============================================================
-
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () =>
-    console.log(`Servidor corriendo en puerto ${PORT}`)
+    console.log(`Servidor listo en puerto ${PORT}`)
 );
